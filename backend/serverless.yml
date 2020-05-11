@@ -1,0 +1,267 @@
+service:
+  name: Sports-tracker-alf
+
+plugins:
+  - serverless-webpack
+  - serverless-iam-roles-per-function
+  - serverless-offline
+  - serverless-dynamodb-local
+  - serverless-aws-documentation
+  - serverless-reqvalidator-plugin
+
+provider:
+  name: aws
+  runtime: nodejs10.x
+
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+
+  tracing:
+    lambda: true
+    apiGateway: true
+
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - xray:PutTelemetryRecords
+        - xray:PutTraceSegments
+      Resource: "*"
+
+  environment:
+    SPENDING_TABLE: SpendingTracker-Alf${self:provider.stage}
+    IMAGES_S3_BUCKET: spending-tracker-alf-images-${self:provider.stage}
+    SIGNED_URL_EXPIRATION: 300
+
+custom:
+  serverless-offline:
+    port: 3003
+
+  dynamodb:
+    start:
+      port: 8000
+      inMemory: true
+      migrate: true
+
+  documentation:
+    api:
+      info:
+        version: v1.0.0
+        title: Spending Tracker API
+        description: Serverless application for Spending Tracker CRUD
+    models:
+      - name: CreateSpendingRequest
+        contentType: application/json
+        schema:
+          required: 
+            - name
+            - category
+            - amount
+            - date
+          properties:
+            name:
+              type: string
+            category:
+              type: string
+            amount:
+              type: number
+            date:
+              type: string
+      - name: UpdateSpendingRequest
+        contentType: application/json
+        schema:
+          properties:
+            name:
+              type: string
+            date:
+              type: string
+            category:
+              type: string
+            amount:
+              type: number
+
+functions:
+  Auth:
+    handler: src/lambda/auth/auth0Authorizer.handler
+    iamRoleStatementsInherit: true
+
+  GetSpendings:
+    handler: src/lambda/http/getSpendings.handler
+    events:
+      - http:
+          method: get
+          path: spendings
+          cors: true
+          authorizer: Auth
+    iamRoleStatementsInherit: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.SPENDING_TABLE}
+
+  CreateSpending:
+    handler: src/lambda/http/createSpending.handler
+    events:
+      - http:
+          method: post
+          path: spendings
+          cors: true
+          authorizer: Auth
+          reqValidatorName: 'RequestBodyValidator'
+          documentation:
+            summary: Create a new spending log
+            description: Create a new spending log
+            requestModels:
+              "application/json": CreateSpendingRequest
+    iamRoleStatementsInherit: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.SPENDING_TABLE}
+
+  UpdateSpending:
+    handler: src/lambda/http/updateSpending.handler
+    events:
+      - http:
+          method: patch
+          path: spendings/{spendingId}
+          cors: true
+          authorizer: Auth
+          reqValidatorName: RequestBodyValidator
+          documentation:
+            summary: Update Spending
+            description: Update Spending
+            requestModels:
+              "application/json": UpdateSpendingRequest
+    iamRoleStatementsInherit: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.SPENDING_TABLE}
+    
+
+  DeleteSpending:
+    handler: src/lambda/http/deleteSpending.handler
+    events:
+      - http:
+          method: delete
+          path: spendings/{spendingId}
+          cors: true
+          authorizer: Auth
+    iamRoleStatementsInherit: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:DeleteItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.SPENDING_TABLE}
+
+  GenerateUploadUrl:
+    handler: src/lambda/http/generateUploadUrl.handler
+    events:
+      - http:
+          method: post
+          path: spendings/{spendingId}/attachment
+          cors: true
+          authorizer: Auth
+    iamRoleStatementsInherit: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - s3:PutObject
+          - s3:GetObject
+        Resource: arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}/*
+
+  UpdateImageUrlToDb:
+    handler: src/lambda/s3/updateImageUrl.handler
+    iamRoleStatementsInherit: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.SPENDING_TABLE}
+
+resources:
+  Resources:
+    SpendingsDynamoDBTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: spendingId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: spendingId
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.SPENDING_TABLE}
+    
+    GatewayResponseDefault4XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+          gatewayresponse.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST,DELETE,PATCH'"
+        ResponseType: DEFAULT_4XX
+        RestApiId:
+          Ref: ApiGatewayRestApi
+
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.IMAGES_S3_BUCKET}
+        NotificationConfiguration:
+          LambdaConfigurations:
+            - Event: s3:ObjectCreated:*
+              Function: !GetAtt UpdateImageUrlToDbLambdaFunction.Arn
+        CorsConfiguration:
+          CorsRules:
+            -
+              AllowedOrigins:
+                - '*'
+              AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+
+    UpdateImageUrlToDbPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !Ref UpdateImageUrlToDbLambdaFunction
+        Principal: s3.amazonaws.com
+        Action: lambda:InvokeFunction
+        SourceAccount: !Ref AWS::AccountId
+        SourceArn: arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}
+
+    BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        PolicyDocument:
+          Id: MyPolicy
+          Version: "2012-10-17"
+          Statement:
+            - Sid: PublicReadForGetBucketObjects
+              Effect: Allow
+              Principal: '*'
+              Action: 's3:GetObject'
+              Resource: 'arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}/*'
+        Bucket: !Ref AttachmentsBucket
+
+    RequestBodyValidator:
+      Type: AWS::ApiGateway::RequestValidator
+      Properties:
+        Name: 'request-body-validator'
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        ValidateRequestBody: true
+        ValidateRequestParameters: false

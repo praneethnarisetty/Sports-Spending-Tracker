@@ -1,7 +1,8 @@
-# Serverless tracker based App
-
+# Serverless Sports tracker based App
+Github link: https://github.com/praneethnarisetty/Sports-Spending-Tracker
 This project is a simple spending tracker application using AW Lambda combined with Serverless Framework. It used AWS DynamoDB for storing data and AWS S3 to store image. Also auth0 service is used for authentication of the user.
-
+## Github link
+https://github.com/praneethnarisetty/Sports-Spending-Tracker
 # Functionality of the application
 
 This application allows to perform CRUD operation on Spending items. Each Spending item can also optinally have an attachment image. Each authenticated user can access only his/her own created spending items.
